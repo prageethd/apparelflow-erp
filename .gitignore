@@ -1,0 +1,28 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+
+backend/src/generated/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+
+
+.env.local
+dist/
+
+
+# AI coding tool reference files
+**/.agents/
+**/.claude/
+**/.windsurf/
+
+# Local editor settings
+.vscode/
+
+# Local Kiro tool configuration
+.kiro/specs/**/.config.kiro
