@@ -1,0 +1,129 @@
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  runtime                = "nodejs"
+  moduleFormat           = "cjs"
+  generatedFileExtension = "ts"
+  importFileExtension    = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  cutting_supervisor
+  cutting_verifier
+  sewing_supervisor
+}
+
+enum OrderStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum VerificationItemStatus {
+  GREEN
+  YELLOW
+  RED
+}
+
+enum VerificationDecision {
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String
+  role         UserRole
+  fullName     String
+  createdAt    DateTime @default(now())
+
+  createdOrders    CuttingOrder[]    @relation("OrderCreator")
+  verificationLogs VerificationLog[] @relation("Verifier")
+}
+
+model Recipe {
+  id             Int      @id @default(autoincrement())
+  recipeCode     String   @unique
+  name           String
+  category       String
+  stdFabricYards Decimal  @db.Decimal(10, 2)
+  wastageCap     Decimal  @db.Decimal(5, 2)
+  createdAt      DateTime @default(now())
+
+  components    RecipeComponent[]
+  cuttingOrders CuttingOrder[]
+}
+
+model RecipeComponent {
+  id               Int     @id @default(autoincrement())
+  recipeId         Int
+  componentName    String
+  piecesPerGarment Int
+  imageUrl         String?
+
+  recipe            Recipe             @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  verificationItems VerificationItem[]
+
+  @@unique([recipeId, componentName])
+  @@index([recipeId])
+}
+
+model CuttingOrder {
+  id              Int         @id @default(autoincrement())
+  orderNo         String      @unique
+  recipeId        Int
+  targetQty       Int
+  fabricRollId    String
+  actualFabricYds Decimal     @db.Decimal(10, 2)
+  status          OrderStatus @default(PENDING_VERIFICATION)
+  createdById     Int
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  recipe            Recipe             @relation(fields: [recipeId], references: [id])
+  createdBy         User               @relation("OrderCreator", fields: [createdById], references: [id])
+  verificationItems VerificationItem[]
+  verificationLogs  VerificationLog[]
+
+  @@index([recipeId])
+  @@index([createdById])
+  @@index([status])
+}
+
+model VerificationItem {
+  id          Int                     @id @default(autoincrement())
+  orderId     Int
+  componentId Int
+  expectedQty Int
+  actualQty   Int?
+  status      VerificationItemStatus?
+
+  order     CuttingOrder    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  component RecipeComponent @relation(fields: [componentId], references: [id])
+
+  @@unique([orderId, componentId])
+  @@index([componentId])
+}
+
+model VerificationLog {
+  id            Int                  @id @default(autoincrement())
+  orderId       Int
+  verifierId    Int
+  decision      VerificationDecision
+  rejectionNote String?
+  wastagePct    Decimal?             @db.Decimal(10, 2)
+  timestamp     DateTime             @default(now())
+
+  order    CuttingOrder @relation(fields: [orderId], references: [id])
+  verifier User         @relation("Verifier", fields: [verifierId], references: [id])
+
+  @@index([orderId])
+  @@index([verifierId])
+}
