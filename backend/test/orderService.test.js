@@ -4,6 +4,7 @@ const {
   buildOrderCreateData,
   calculateExpectedComponents,
   calculateFabricMetrics,
+  parseOrderId,
   validateOrderInput,
 } = require("../src/services/orderService");
 
@@ -82,7 +83,18 @@ test("calculates expected fabric and wastage to two decimal places", () => {
     expectedFabricYds: 18,
     wastagePct: 5,
   });
+  assert.deepEqual(calculateFabricMetrics("1.80", 2, 3.8), {
+    expectedFabricYds: 3.6,
+    wastagePct: 5.56,
+  });
   assert.equal(calculateFabricMetrics("0.00", 10, 18.9), null);
+});
+
+test("accepts integer order IDs and rejects order numbers or invalid IDs", () => {
+  assert.equal(parseOrderId("42"), 42);
+  for (const value of ["0", "-1", "1.5", "CO-example", "2147483648", "", undefined]) {
+    assert.equal(parseOrderId(value), null);
+  }
 });
 
 test("builds pending orders with authenticated creator and unverified item values", () => {

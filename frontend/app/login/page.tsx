@@ -3,7 +3,7 @@
 import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiRequest, ApiError } from "@/app/lib/api";
-import { readSession, saveSession, type AuthUser } from "@/app/lib/session";
+import { isUserRole, readSession, saveSession, type AuthUser } from "@/app/lib/session";
 
 type LoginResponse = {
   token: string;
@@ -21,11 +21,12 @@ function isLoginResponse(value: unknown): value is LoginResponse {
     typeof user === "object" &&
     user !== null &&
     "id" in user &&
+    typeof user.id === "number" &&
     Number.isInteger(user.id) &&
     "email" in user &&
     typeof user.email === "string" &&
     "role" in user &&
-    typeof user.role === "string" &&
+    isUserRole(user.role) &&
     "fullName" in user &&
     typeof user.fullName === "string"
   );
@@ -41,11 +42,9 @@ function LoginForm() {
 
   useEffect(() => {
     const session = readSession();
-    if (session?.user.role === "cutting_supervisor") {
+    if (session) {
       router.replace("/dashboard");
-      return;
     }
-
   }, [router]);
 
   const reason = searchParams.get("reason");
@@ -86,12 +85,8 @@ function LoginForm() {
         role: response.user.role,
         fullName: response.user.fullName,
       };
-      if (user.role === "cutting_supervisor") {
-        saveSession({ token: response.token, user });
-        router.replace("/dashboard");
-      } else {
-        setError("This account does not have Cutting Supervisor access.");
-      }
+      saveSession({ token: response.token, user });
+      router.replace("/dashboard");
     } catch (requestError) {
       setError(
         requestError instanceof ApiError

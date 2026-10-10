@@ -7,6 +7,7 @@ const {
   buildOrderCreateData,
   calculateExpectedComponents,
   calculateFabricMetrics,
+  parseOrderId,
   validateOrderInput,
 } = require("../services/orderService");
 
@@ -176,13 +177,14 @@ router.get("/", canReadOrders, async (req, res) => {
 });
 
 router.get("/:id", canReadOrders, async (req, res) => {
-  if (!/^[1-9]\d*$/.test(req.params.id) || Number(req.params.id) > 2147483647) {
+  const orderId = parseOrderId(req.params.id);
+  if (orderId === null) {
     return res.status(400).json({ success: false, message: "Order ID must be a positive integer" });
   }
 
   try {
     const order = await prisma.cuttingOrder.findUnique({
-      where: { id: Number(req.params.id) },
+      where: { id: orderId },
       include: orderRelations,
     });
 

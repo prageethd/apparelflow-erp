@@ -118,6 +118,15 @@ function calculateFabricMetrics(stdFabricYards, targetQty, actualFabricYds) {
   return { expectedFabricYds, wastagePct };
 }
 
+function parseOrderId(value) {
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+    return null;
+  }
+
+  const orderId = Number(value);
+  return orderId <= MAX_INT ? orderId : null;
+}
+
 function buildOrderCreateData({
   orderNo,
   recipeId,
@@ -150,5 +159,6 @@ module.exports = {
   buildOrderCreateData,
   calculateExpectedComponents,
   calculateFabricMetrics,
+  parseOrderId,
   validateOrderInput,
 };

@@ -47,7 +47,7 @@ npm run dev
 | `GET` | `/api/orders` | `cutting_supervisor`, `cutting_verifier` | List persisted orders, newest first. |
 | `GET` | `/api/orders/:id` | `cutting_supervisor`, `cutting_verifier` | Retrieve a persisted order by integer ID. |
 
-Order creation sets `PENDING_VERIFICATION`, derives the creator from the JWT, and calculates expected component quantities from the selected recipe. Verification decisions and sewing queue behavior are not implemented.
+Order creation sets `PENDING_VERIFICATION`, derives the creator from the JWT, and calculates expected component quantities from the selected recipe. The Supervisor form previews expected counts and fabric usage; exceeding a recipe's wastage cap warns and reports the percentage but does not block order creation because no backend acceptance rule specifies rejection. The server-calculated result is authoritative. Roles are assigned to users by the backend; the UI displays the JWT role and does not provide role switching or impersonation. Verification decisions and sewing queue behavior are not implemented.
 
 ## Backend Configuration
 

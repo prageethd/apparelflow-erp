@@ -99,3 +99,17 @@ test("role middleware allows a cutting supervisor", () => {
   assert.equal(result.nextCalled, true);
   assert.equal(result.statusCode, undefined);
 });
+
+test("order read roles allow supervisors and verifiers but deny sewing supervisors", () => {
+  const canReadOrders = requireRole("cutting_supervisor", "cutting_verifier");
+  for (const role of ["cutting_supervisor", "cutting_verifier"]) {
+    const result = invokeMiddleware(canReadOrders, { user: { id: 7, role } });
+    assert.equal(result.nextCalled, true);
+  }
+
+  const sewingResult = invokeMiddleware(canReadOrders, {
+    user: { id: 9, role: "sewing_supervisor" },
+  });
+  assert.equal(sewingResult.statusCode, 403);
+  assert.equal(sewingResult.nextCalled, false);
+});
