@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000";
 
 async function getHealth() {
@@ -20,9 +22,7 @@ async function getHealth() {
   }
 }
 
-export default async function Home() {
-  const health = await getHealth();
-
+export default function Home() {
   return (
     <main className="flex min-h-full flex-1 flex-col items-center justify-center bg-zinc-50 px-6 py-16 font-sans dark:bg-black">
       <div className="w-full max-w-xl rounded-2xl bg-white p-8 shadow-sm dark:bg-zinc-950">
@@ -32,13 +32,36 @@ export default async function Home() {
         <p className="mt-2 text-zinc-600 dark:text-zinc-400">
           Frontend is calling {API_URL}/api/health
         </p>
-        <pre className="mt-6 overflow-x-auto rounded-lg bg-zinc-100 p-4 text-sm text-zinc-800 dark:bg-zinc-900 dark:text-zinc-100">
-          {JSON.stringify(health.body, null, 2)}
-        </pre>
-        <p className="mt-4 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          {health.ok ? "Frontend → backend connection works." : "Frontend could not reach the backend."}
-        </p>
+        <Suspense
+          fallback={
+            <div aria-live="polite">
+              <pre className="mt-6 overflow-x-auto rounded-lg bg-zinc-100 p-4 text-sm text-zinc-800 dark:bg-zinc-900 dark:text-zinc-100">
+                Checking backend connection...
+              </pre>
+              <p className="mt-4 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Checking the backend connection.
+              </p>
+            </div>
+          }
+        >
+          <BackendHealth />
+        </Suspense>
       </div>
     </main>
+  );
+}
+
+async function BackendHealth() {
+  const health = await getHealth();
+
+  return (
+    <div aria-live="polite">
+      <pre className="mt-6 overflow-x-auto rounded-lg bg-zinc-100 p-4 text-sm text-zinc-800 dark:bg-zinc-900 dark:text-zinc-100">
+        {JSON.stringify(health.body, null, 2)}
+      </pre>
+      <p className="mt-4 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+        {health.ok ? "Frontend → backend connection works." : "Frontend could not reach the backend."}
+      </p>
+    </div>
   );
 }
