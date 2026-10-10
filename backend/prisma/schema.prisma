@@ -46,6 +46,7 @@ model User {
 
   createdOrders    CuttingOrder[]    @relation("OrderCreator")
   verificationLogs VerificationLog[] @relation("Verifier")
+  sewingOrders     CuttingOrder[]    @relation("SewingStarter")
 }
 
 model Recipe {
@@ -82,18 +83,24 @@ model CuttingOrder {
   targetQty       Int
   fabricRollId    String
   actualFabricYds Decimal     @db.Decimal(10, 2)
+  expectedFabricYds Decimal   @db.Decimal(20, 2)
+  wastagePct      Decimal     @db.Decimal(20, 2)
   status          OrderStatus @default(PENDING_VERIFICATION)
   createdById     Int
+  sewingStartedById Int?
+  sewingStartedAt DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
   recipe            Recipe             @relation(fields: [recipeId], references: [id])
   createdBy         User               @relation("OrderCreator", fields: [createdById], references: [id])
+  sewingStartedBy   User?              @relation("SewingStarter", fields: [sewingStartedById], references: [id], onDelete: Restrict)
   verificationItems VerificationItem[]
   verificationLogs  VerificationLog[]
 
   @@index([recipeId])
   @@index([createdById])
+  @@index([sewingStartedById])
   @@index([status])
 }
 
@@ -118,7 +125,8 @@ model VerificationLog {
   verifierId    Int
   decision      VerificationDecision
   rejectionNote String?
-  wastagePct    Decimal?             @db.Decimal(10, 2)
+  wastagePct    Decimal?             @db.Decimal(20, 2)
+  snapshot      Json?
   timestamp     DateTime             @default(now())
 
   order    CuttingOrder @relation(fields: [orderId], references: [id])
@@ -126,4 +134,5 @@ model VerificationLog {
 
   @@index([orderId])
   @@index([verifierId])
+  @@index([orderId, timestamp])
 }

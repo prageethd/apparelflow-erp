@@ -2,29 +2,9 @@ require("dotenv").config();
 
 const bcrypt = require("bcryptjs");
 const prisma = require("../src/config/prisma");
+const DEMO_USERS = require("../src/config/demoAccounts");
 
 const BCRYPT_ROUNDS = 10;
-
-const DEMO_USERS = [
-  {
-    fullName: "Cutting Supervisor",
-    role: "cutting_supervisor",
-    email: "supervisor@apparelflow.com",
-    password: "Supervisor123!",
-  },
-  {
-    fullName: "Cutting Verifier",
-    role: "cutting_verifier",
-    email: "verifier@apparelflow.com",
-    password: "Verifier123!",
-  },
-  {
-    fullName: "Sewing Supervisor",
-    role: "sewing_supervisor",
-    email: "sewing@apparelflow.com",
-    password: "Sewing123!",
-  },
-];
 
 const DEMO_RECIPES = [
   {
@@ -115,6 +95,10 @@ async function seedRecipes() {
 
 async function main() {
   try {
+    if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_SEED !== "true") {
+      throw new Error("Production seeding is disabled; explicitly review ALLOW_DEMO_SEED before running this script");
+    }
+
     await seedUsers();
     await seedRecipes();
 

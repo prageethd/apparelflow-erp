@@ -1,7 +1,7 @@
 const MAX_INT = 2147483647;
 const MAX_FABRIC_ROLL_ID_LENGTH = 100;
 const MAX_ACTUAL_FABRIC_YDS = 99999999.99;
-const { OrderStatus } = require("../generated/prisma/enums.ts");
+const MAX_PRECISE_DECIMAL_2 = Number.MAX_SAFE_INTEGER / 100;
 
 function validateOrderInput(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -104,14 +104,19 @@ function calculateFabricMetrics(stdFabricYards, targetQty, actualFabricYds) {
   }
 
   const expectedFabricYds = Number((standardYards * targetQty).toFixed(2));
-  if (!Number.isFinite(expectedFabricYds) || expectedFabricYds <= 0) {
+  if (
+    !Number.isFinite(expectedFabricYds) ||
+    expectedFabricYds <= 0 ||
+    expectedFabricYds > MAX_PRECISE_DECIMAL_2 ||
+    !Number.isSafeInteger(expectedFabricYds * 100)
+  ) {
     return null;
   }
 
   const wastagePct = Number(
     (((actualFabricYds - expectedFabricYds) / expectedFabricYds) * 100).toFixed(2)
   );
-  if (!Number.isFinite(wastagePct)) {
+  if (!Number.isFinite(wastagePct) || Math.abs(wastagePct) > MAX_PRECISE_DECIMAL_2) {
     return null;
   }
 
@@ -133,6 +138,8 @@ function buildOrderCreateData({
   targetQty,
   fabricRollId,
   actualFabricYds,
+  expectedFabricYds,
+  wastagePct,
   createdById,
   expectedComponents,
 }) {
@@ -142,7 +149,9 @@ function buildOrderCreateData({
     targetQty,
     fabricRollId,
     actualFabricYds: actualFabricYds.toFixed(2),
-    status: OrderStatus.PENDING_VERIFICATION,
+    expectedFabricYds: expectedFabricYds.toFixed(2),
+    wastagePct: wastagePct.toFixed(2),
+    status: "PENDING_VERIFICATION",
     createdById,
     verificationItems: {
       create: expectedComponents.map((component) => ({

@@ -2,10 +2,18 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiRequest, ApiError, type ApiEnvelope, type CuttingOrder, type Recipe } from "@/app/lib/api";
-import { clearSession, readSession, type AuthSession } from "@/app/lib/session";
+import { apiRequest, ApiError, type ApiEnvelope, type AuthUser, type CuttingOrder, type Recipe } from "@/app/lib/api";
+import { clearSession, readSession, saveSession, type AuthSession } from "@/app/lib/session";
+import {
+  approvalBlockReason as getApprovalBlockReason,
+  expectedComponentQty,
+  fabricPreview,
+  parseFabricYards,
+  parseTargetQuantity,
+  trafficStatus,
+} from "@/app/lib/workflow";
 
-type PageState = "checking" | "ready" | "forbidden" | "restricted";
+type PageState = "checking" | "ready" | "sewing" | "forbidden";
 
 type OrderFormErrors = {
   recipeId?: string;
@@ -23,17 +31,11 @@ const roleLabels = {
   sewing_supervisor: "Sewing Supervisor",
 } as const;
 
-function parseTargetQuantity(value: string): number | null {
-  if (!/^[1-9]\d*$/.test(value)) return null;
-  const quantity = Number(value);
-  return Number.isSafeInteger(quantity) && quantity <= 2147483647 ? quantity : null;
-}
-
-function parseFabricYards(value: string): number | null {
-  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
-  const yards = Number(value);
-  return Number.isFinite(yards) && yards > 0 && yards <= 99999999.99 ? yards : null;
-}
+const trafficLabels = {
+  GREEN: "GREEN · exact count",
+  YELLOW: "YELLOW · excess count",
+  RED: "RED · shortage",
+} as const;
 
 function statusClassName(status: string): string {
   if (status === "PENDING_VERIFICATION") {
@@ -60,6 +62,10 @@ export default function DashboardPage() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState("");
   const [selectedOrder, setSelectedOrder] = useState<CuttingOrder | null>(null);
+  const [countDrafts, setCountDrafts] = useState<Record<number, string>>({});
+  const [savingCounts, setSavingCounts] = useState(false);
+  const [transitionLoading, setTransitionLoading] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState("");
   const [recipeId, setRecipeId] = useState("");
   const [targetQty, setTargetQty] = useState("");
   const [fabricRollId, setFabricRollId] = useState("");
@@ -77,15 +83,13 @@ export default function DashboardPage() {
 
   const selectedRecipe = recipes.find((recipe) => recipe.id === Number(recipeId));
   const previewQuantity = parseTargetQuantity(targetQty);
-  const expectedFabricPreview = selectedRecipe && previewQuantity
-    ? Number((selectedRecipe.stdFabricYards * previewQuantity).toFixed(2))
-    : null;
   const actualFabricPreview = parseFabricYards(actualFabricYds);
-  const wastagePreview = expectedFabricPreview && actualFabricPreview
-    ? Number((((actualFabricPreview - expectedFabricPreview) / expectedFabricPreview) * 100).toFixed(2))
+  const fabricPreviewValues = selectedRecipe && previewQuantity
+    ? fabricPreview(selectedRecipe.stdFabricYards, previewQuantity, actualFabricPreview, selectedRecipe.wastageCap)
     : null;
-  const exceedsWastageCap =
-    wastagePreview !== null && selectedRecipe !== undefined && wastagePreview > selectedRecipe.wastageCap;
+  const expectedFabricPreview = fabricPreviewValues?.expectedFabricYds ?? null;
+  const wastagePreview = fabricPreviewValues?.wastagePct ?? null;
+  const exceedsWastageCap = fabricPreviewValues?.exceedsWastageCap ?? false;
 
   const handleRequestError = useCallback((error: unknown): void => {
     if (error instanceof ApiError && error.status === 401) {
@@ -114,15 +118,38 @@ export default function DashboardPage() {
       if (!active) return;
 
       try {
-        const recipeRequest = authorizedSession.user.role === "cutting_supervisor"
-          ? apiRequest<ApiEnvelope<Recipe[]>>("/api/recipes", {}, authorizedSession.token)
+        const identityResponse = await apiRequest<ApiEnvelope<AuthUser>>(
+          "/api/auth/me",
+          {},
+          authorizedSession.token
+        );
+        const verifiedSession = { token: authorizedSession.token, user: identityResponse.data };
+        saveSession(verifiedSession);
+        setSession(verifiedSession);
+
+        if (verifiedSession.user.role === "sewing_supervisor") {
+          const queueResponse = await apiRequest<ApiEnvelope<CuttingOrder[]>>(
+            "/api/sewing/queue",
+            {},
+            verifiedSession.token
+          );
+          if (active) {
+            setOrders(queueResponse.data);
+            setPageState("sewing");
+            setPageError("");
+          }
+          return;
+        }
+
+        const recipeRequest = verifiedSession.user.role === "cutting_supervisor"
+          ? apiRequest<ApiEnvelope<Recipe[]>>("/api/recipes", {}, verifiedSession.token)
           : Promise.resolve(null);
         const [recipeResponse, orderResponse] = await Promise.all([
           recipeRequest,
-          apiRequest<ApiEnvelope<CuttingOrder[]>>("/api/orders", {}, authorizedSession.token),
+          apiRequest<ApiEnvelope<CuttingOrder[]>>("/api/orders", {}, verifiedSession.token),
         ]);
         if (active) {
-          setSession(authorizedSession);
+          setSession(verifiedSession);
           setRecipes(recipeResponse?.data ?? []);
           setOrders(orderResponse.data);
           setPageState("ready");
@@ -130,12 +157,6 @@ export default function DashboardPage() {
         }
       } catch (error) {
         if (!active) return;
-        if (error instanceof ApiError && error.status === 403 && authorizedSession.user.role === "sewing_supervisor") {
-          setSession(authorizedSession);
-          setPageState("restricted");
-          setPageError("");
-          return;
-        }
         handleRequestError(error);
         setPageState(error instanceof ApiError && error.status === 403 ? "forbidden" : "ready");
       } finally {
@@ -174,7 +195,8 @@ export default function DashboardPage() {
   }, [detailsOpen]);
 
   async function refreshOrders(token: string): Promise<void> {
-    const response = await apiRequest<ApiEnvelope<CuttingOrder[]>>("/api/orders", {}, token);
+    const path = session?.user.role === "sewing_supervisor" ? "/api/sewing/queue" : "/api/orders";
+    const response = await apiRequest<ApiEnvelope<CuttingOrder[]>>(path, {}, token);
     setOrders(response.data);
   }
 
@@ -183,15 +205,26 @@ export default function DashboardPage() {
 
     setSelectedOrder(order);
     setDetailsError("");
+    setRejectionReason("");
     setDetailsLoading(true);
     setDetailsOpen(true);
+    setCountDrafts(Object.fromEntries(order.expectedComponents.map((item) => [
+      item.componentId,
+      item.actualQty === null ? "" : String(item.actualQty),
+    ])));
     try {
       const response = await apiRequest<ApiEnvelope<CuttingOrder>>(
-        `/api/orders/${order.id}`,
+        session.user.role === "sewing_supervisor"
+          ? `/api/sewing/orders/${order.id}`
+          : `/api/orders/${order.id}`,
         {},
         session.token
       );
       setSelectedOrder(response.data);
+      setCountDrafts(Object.fromEntries(response.data.expectedComponents.map((item) => [
+        item.componentId,
+        item.actualQty === null ? "" : String(item.actualQty),
+      ])));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         handleRequestError(error);
@@ -227,6 +260,90 @@ export default function DashboardPage() {
 
     setFormErrors(nextErrors);
     return { valid: Object.keys(nextErrors).length === 0, quantity: quantity ?? 0, fabric: fabric ?? 0 };
+  }
+
+  async function saveVerificationCounts(): Promise<boolean> {
+    if (!session || !selectedOrder) return false;
+    const items = [];
+    for (const component of selectedOrder.expectedComponents) {
+      const rawValue = countDrafts[component.componentId] ?? "";
+      if (rawValue === "") {
+        items.push({ componentId: component.componentId, actualQty: null });
+        continue;
+      }
+      if (!/^(0|[1-9]\d*)$/.test(rawValue)) {
+        setDetailsError(`Enter a non-negative whole number for ${component.componentName}.`);
+        return false;
+      }
+      const actualQty = Number(rawValue);
+      if (!Number.isSafeInteger(actualQty) || actualQty > 2147483647) {
+        setDetailsError(`The count for ${component.componentName} exceeds the supported limit.`);
+        return false;
+      }
+      items.push({ componentId: component.componentId, actualQty });
+    }
+
+    setSavingCounts(true);
+    setDetailsError("");
+    try {
+      const response = await apiRequest<ApiEnvelope<CuttingOrder>>(
+        `/api/orders/${selectedOrder.id}/counts`,
+        { method: "PATCH", body: JSON.stringify({ items }) },
+        session.token
+      );
+      setSelectedOrder(response.data);
+      setCountDrafts(Object.fromEntries(response.data.expectedComponents.map((item) => [
+        item.componentId,
+        item.actualQty === null ? "" : String(item.actualQty),
+      ])));
+      setOrders((current) => current.map((order) => order.id === response.data.id ? response.data : order));
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) handleRequestError(error);
+      else setDetailsError(error instanceof Error ? error.message : "Unable to save component counts.");
+      return false;
+    } finally {
+      setSavingCounts(false);
+    }
+  }
+
+  async function rejectSelectedOrder(): Promise<void> {
+    if (!selectedOrder || !rejectionReason.trim() || transitionLoading || savingCounts) return;
+    const countsSaved = await saveVerificationCounts();
+    if (countsSaved) {
+      await runOrderTransition(`/api/orders/${selectedOrder.id}/reject`, { reason: rejectionReason });
+    }
+  }
+
+  async function runOrderTransition(path: string, body?: Record<string, unknown>): Promise<void> {
+    if (!session || !selectedOrder || transitionLoading) return;
+    setTransitionLoading(true);
+    setDetailsError("");
+    try {
+      const response = await apiRequest<ApiEnvelope<CuttingOrder>>(
+        path,
+        { method: "POST", body: JSON.stringify(body ?? {}) },
+        session.token
+      );
+      setSelectedOrder(response.data);
+      setOrders((current) => current.map((order) => order.id === response.data.id ? response.data : order));
+      setRejectionReason("");
+      if (session.user.role === "cutting_supervisor" && response.data.status === "PENDING_VERIFICATION") {
+        setCountDrafts(Object.fromEntries(response.data.expectedComponents.map((item) => [item.componentId, ""])));
+      }
+      if (session.user.role === "sewing_supervisor") {
+        await refreshOrders(session.token);
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) handleRequestError(error);
+      else setDetailsError(error instanceof Error ? error.message : "Unable to complete this workflow action.");
+    } finally {
+      setTransitionLoading(false);
+    }
+  }
+
+  function changeCount(componentId: number, value: string): void {
+    setCountDrafts((current) => ({ ...current, [componentId]: value }));
   }
 
   async function handleCreateOrder(event: FormEvent<HTMLFormElement>) {
@@ -295,7 +412,12 @@ export default function DashboardPage() {
 
   const userRole = session?.user.role;
   const canCreateOrders = userRole === "cutting_supervisor";
-  const canReadOrders = userRole === "cutting_supervisor" || userRole === "cutting_verifier";
+  const canReadOrders = userRole === "cutting_supervisor" || userRole === "cutting_verifier" || userRole === "sewing_supervisor";
+  const isVerifier = userRole === "cutting_verifier";
+  const isSewingWorkspace = userRole === "sewing_supervisor";
+  const approvalBlockReason = selectedOrder
+    ? getApprovalBlockReason(selectedOrder.status, selectedOrder.expectedComponents, countDrafts)
+    : "Select an order before approving.";
 
   if (pageState === "checking") {
     return (
@@ -320,39 +442,13 @@ export default function DashboardPage() {
     );
   }
 
-  if (pageState === "restricted") {
-    return (
-      <main className="min-h-screen bg-[#edf2ef] text-slate-950">
-        <header className="border-b border-emerald-950/20 bg-[#173d30] text-white">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-5 sm:px-8">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-200">ApparelFlow ERP</p>
-              <h1 className="mt-1 text-xl font-semibold">Operations</h1>
-            </div>
-            <div className="flex items-center gap-4">
-              <p className="text-sm text-emerald-50">{roleLabels.sewing_supervisor}</p>
-              <button className="min-h-10 border border-white/50 px-3 text-sm font-semibold text-white hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" onClick={signOut} type="button">
-                Sign out
-              </button>
-            </div>
-          </div>
-        </header>
-        <section className="mx-auto max-w-3xl px-5 py-12 sm:px-8">
-          <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-800">Role access</p>
-          <h2 className="mt-2 text-2xl font-semibold">Cutting orders are not available to this role</h2>
-          <p className="mt-3 text-slate-700">Your authenticated role is Sewing Supervisor. This account has no cutting-order actions in the current assessment scope.</p>
-        </section>
-      </main>
-    );
-  }
-
   return (
     <main className="min-h-screen bg-[#edf2ef] text-slate-950">
       <header className="border-b border-emerald-950/20 bg-[#173d30] text-white">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-5 sm:px-8">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-200">ApparelFlow ERP</p>
-            <h1 className="mt-1 text-xl font-semibold">Cutting operations</h1>
+            <h1 className="mt-1 text-xl font-semibold">{isSewingWorkspace ? "Sewing operations" : "Cutting operations"}</h1>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right">
@@ -370,7 +466,7 @@ export default function DashboardPage() {
         <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-800">{userRole ? roleLabels[userRole] : "Orders"}</p>
-            <h2 className="mt-1 text-2xl font-semibold tracking-tight">Cutting orders</h2>
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight">{isSewingWorkspace ? "Sewing queue" : "Cutting orders"}</h2>
           </div>
           {canCreateOrders && (
             <button
@@ -515,7 +611,7 @@ export default function DashboardPage() {
                         {selectedRecipe.components.map((component) => (
                           <li className="flex justify-between gap-3 border-b border-slate-200 py-2 text-sm" key={component.id}>
                             <span>{component.componentName} <span className="text-slate-600">× {component.piecesPerGarment}</span></span>
-                            <span className="font-semibold tabular-nums">{previewQuantity * component.piecesPerGarment}</span>
+                            <span className="font-semibold tabular-nums">{expectedComponentQty(component.piecesPerGarment, previewQuantity)}</span>
                           </li>
                         ))}
                       </ul>
@@ -572,8 +668,8 @@ export default function DashboardPage() {
         {canReadOrders && <section aria-labelledby="orders-heading" className="border border-slate-300 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 sm:px-6">
             <div>
-              <h3 className="font-semibold" id="orders-heading">Recent orders</h3>
-              <p className="mt-0.5 text-sm text-slate-600">Persisted cutting orders, newest first</p>
+              <h3 className="font-semibold" id="orders-heading">{isSewingWorkspace ? "Verified queue and assembly history" : "Orders"}</h3>
+              <p className="mt-0.5 text-sm text-slate-600">{isSewingWorkspace ? "Only verified and in-progress batches are returned by the API." : "Persisted cutting orders, newest first"}</p>
             </div>
             <span className="text-sm font-medium text-slate-600">{orders.length} total</span>
           </div>
@@ -593,7 +689,7 @@ export default function DashboardPage() {
                     <th className="px-5 py-3 font-semibold" scope="col">Fabric roll</th>
                     <th className="px-5 py-3 font-semibold" scope="col">Created</th>
                     <th className="px-5 py-3 font-semibold" scope="col">Status</th>
-                    <th className="px-5 py-3 font-semibold" scope="col">Details</th>
+                    <th className="px-5 py-3 font-semibold" scope="col">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -617,6 +713,15 @@ export default function DashboardPage() {
                         >
                           View details
                         </button>
+                        {isSewingWorkspace && order.status === "VERIFIED" && (
+                          <button
+                            className="ml-4 font-semibold text-emerald-900 underline decoration-emerald-700 underline-offset-2 hover:text-emerald-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-800"
+                            onClick={() => void runOrderTransition(`/api/sewing/orders/${order.id}/start`)}
+                            type="button"
+                          >
+                            Start assembly
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -667,22 +772,135 @@ export default function DashboardPage() {
                   <div><dt className="font-semibold text-slate-600">Expected fabric</dt><dd>{selectedOrder.expectedFabricYds?.toFixed(2) ?? "Unavailable"} yd</dd></div>
                   <div><dt className="font-semibold text-slate-600">Wastage</dt><dd>{selectedOrder.wastagePct !== null ? `${selectedOrder.wastagePct.toFixed(2)}%` : "Unavailable"}</dd></div>
                   <div><dt className="font-semibold text-slate-600">Created</dt><dd>{new Date(selectedOrder.createdAt).toLocaleString()}</dd></div>
+                  {selectedOrder.sewingStartedAt && <div><dt className="font-semibold text-slate-600">Assembly started</dt><dd>{new Date(selectedOrder.sewingStartedAt).toLocaleString()} by {selectedOrder.sewingStartedBy?.fullName ?? "Unknown user"}</dd></div>}
                 </dl>
                 <div>
-                  <h4 className="text-sm font-semibold">Expected component quantities</h4>
+                  <h4 className="text-sm font-semibold">{isVerifier ? "Physical component counts" : "Component counts"}</h4>
                   {selectedOrder.expectedComponents.length === 0 ? (
                     <p className="mt-2 text-sm text-slate-600">No component details returned.</p>
                   ) : (
                     <ul className="mt-2 divide-y divide-slate-200">
                       {selectedOrder.expectedComponents.map((component) => (
-                        <li className="flex justify-between gap-3 py-2 text-sm" key={component.componentId}>
-                          <span>{component.componentName} <span className="text-slate-600">× {component.piecesPerGarment}</span></span>
-                          <span className="font-semibold tabular-nums">{component.expectedQty}</span>
+                        <li className="grid gap-2 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_7rem_10rem] sm:items-center" key={component.componentId}>
+                          <span>{component.componentName} <span className="text-slate-600">× {component.piecesPerGarment} · expected {component.expectedQty}</span></span>
+                          {isVerifier && selectedOrder.status === "PENDING_VERIFICATION" ? (
+                            <label className="text-xs font-semibold text-slate-700">
+                              Actual count
+                              <input
+                                aria-describedby={countDrafts[component.componentId] && !/^(0|[1-9]\d*)$/.test(countDrafts[component.componentId]) ? `count-${component.componentId}-error` : undefined}
+                                aria-invalid={Boolean(countDrafts[component.componentId] && !/^(0|[1-9]\d*)$/.test(countDrafts[component.componentId]))}
+                                aria-label={`Actual count for ${component.componentName}`}
+                                className={`${inputClassName} mt-1`}
+                                inputMode="numeric"
+                                min={0}
+                                onChange={(event) => changeCount(component.componentId, event.target.value)}
+                                type="number"
+                                step={1}
+                                value={countDrafts[component.componentId] ?? ""}
+                              />
+                              {countDrafts[component.componentId] && !/^(0|[1-9]\d*)$/.test(countDrafts[component.componentId]) && (
+                                <span className="mt-1 block text-xs font-medium text-rose-800" id={`count-${component.componentId}-error`}>Enter a non-negative whole number.</span>
+                              )}
+                            </label>
+                          ) : (
+                            <span className="font-semibold tabular-nums">Actual: {component.actualQty ?? "Not counted"}</span>
+                          )}
+                          {(() => {
+                            const raw = countDrafts[component.componentId] ?? (component.actualQty === null ? "" : String(component.actualQty));
+                            const actual = raw !== "" && /^(0|[1-9]\d*)$/.test(raw) ? Number(raw) : component.actualQty;
+                            const status = isVerifier && selectedOrder.status === "PENDING_VERIFICATION"
+                              ? trafficStatus(component.expectedQty, actual)
+                              : component.status ?? trafficStatus(component.expectedQty, component.actualQty);
+                            return status ? (
+                              <span className={`inline-flex w-fit px-2.5 py-1 text-xs font-semibold ${status === "GREEN" ? "bg-emerald-100 text-emerald-950" : status === "YELLOW" ? "bg-amber-100 text-amber-950" : "bg-rose-100 text-rose-950"}`}>
+                                {trafficLabels[status]}
+                              </span>
+                            ) : <span className="text-xs font-semibold text-slate-600">NOT COUNTED</span>;
+                          })()}
                         </li>
                       ))}
                     </ul>
                   )}
                 </div>
+
+                {isVerifier && selectedOrder.status === "PENDING_VERIFICATION" && (
+                  <div className="space-y-4 border-t border-slate-200 pt-4">
+                    {approvalBlockReason && <p className="border-l-4 border-amber-600 bg-amber-50 px-3 py-2 text-sm text-amber-950" role="status">{approvalBlockReason}</p>}
+                    <button
+                      className="min-h-11 border border-slate-500 px-4 text-sm font-semibold text-slate-900 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={savingCounts || transitionLoading}
+                      onClick={() => void saveVerificationCounts()}
+                      type="button"
+                    >
+                      {savingCounts ? "Saving counts..." : "Save counts"}
+                    </button>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        className="min-h-11 bg-emerald-800 px-4 text-sm font-semibold text-white hover:bg-emerald-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-900 disabled:cursor-not-allowed disabled:bg-slate-400"
+                        disabled={Boolean(approvalBlockReason) || savingCounts || transitionLoading}
+                        onClick={() => void runOrderTransition(`/api/orders/${selectedOrder.id}/approve`)}
+                        type="button"
+                      >
+                        {transitionLoading ? "Processing..." : "Approve batch"}
+                      </button>
+                      <button
+                        className="min-h-11 bg-rose-800 px-4 text-sm font-semibold text-white hover:bg-rose-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-900 disabled:cursor-not-allowed disabled:bg-slate-400"
+                        disabled={!rejectionReason.trim() || savingCounts || transitionLoading}
+                        onClick={() => void rejectSelectedOrder()}
+                        type="button"
+                      >
+                        Reject for re-cut
+                      </button>
+                    </div>
+                    <label className="block text-sm font-semibold text-slate-800" htmlFor="rejectionReason">
+                      Rejection reason (required)
+                      <textarea
+                        className={`${inputClassName} mt-1 min-h-24 py-2`}
+                        id="rejectionReason"
+                        maxLength={2000}
+                        onChange={(event) => setRejectionReason(event.target.value)}
+                        value={rejectionReason}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {userRole === "cutting_supervisor" && selectedOrder.status === "REJECTED" && (
+                  <button
+                    className="min-h-11 bg-emerald-800 px-4 text-sm font-semibold text-white hover:bg-emerald-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-900 disabled:opacity-50"
+                    disabled={transitionLoading}
+                    onClick={() => void runOrderTransition(`/api/orders/${selectedOrder.id}/recut`)}
+                    type="button"
+                  >
+                    Return re-cut order for verification
+                  </button>
+                )}
+
+                {isSewingWorkspace && selectedOrder.status === "VERIFIED" && (
+                  <button
+                    className="min-h-11 bg-emerald-800 px-4 text-sm font-semibold text-white hover:bg-emerald-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-900 disabled:opacity-50"
+                    disabled={transitionLoading}
+                    onClick={() => void runOrderTransition(`/api/sewing/orders/${selectedOrder.id}/start`)}
+                    type="button"
+                  >
+                    Start sewing assembly
+                  </button>
+                )}
+
+                {selectedOrder.verificationHistory.length > 0 && (
+                  <section className="border-t border-slate-200 pt-4">
+                    <h4 className="text-sm font-semibold">Verification history</h4>
+                    <ol className="mt-2 space-y-3">
+                      {selectedOrder.verificationHistory.map((entry) => (
+                        <li className="border-l-2 border-slate-300 pl-3 text-sm" key={entry.id}>
+                          <p className="font-semibold">{entry.decision} by {entry.verifier.fullName} · {new Date(entry.timestamp).toLocaleString()}</p>
+                          {entry.rejectionNote && <p className="mt-1 text-rose-900">Reason: {entry.rejectionNote}</p>}
+                          <p className="mt-1 text-slate-700">Recorded wastage: {entry.wastagePct?.toFixed(2) ?? "Unavailable"}%</p>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                )}
               </div>
             ) : null}
           </section>

@@ -1,6 +1,5 @@
 const { randomUUID } = require("node:crypto");
 const express = require("express");
-const prisma = require("../config/prisma");
 const authenticate = require("../middleware/authMiddleware");
 const requireRole = require("../middleware/roleMiddleware");
 const {
@@ -10,79 +9,12 @@ const {
   parseOrderId,
   validateOrderInput,
 } = require("../services/orderService");
+const { orderRelations, serializeOrder } = require("../services/orderPresentation");
 
-const router = express.Router();
-const canReadOrders = requireRole("cutting_supervisor", "cutting_verifier");
-
-const orderRelations = {
-  recipe: {
-    select: {
-      id: true,
-      recipeCode: true,
-      name: true,
-      category: true,
-      stdFabricYards: true,
-      wastageCap: true,
-    },
-  },
-  createdBy: {
-    select: {
-      id: true,
-      email: true,
-      fullName: true,
-      role: true,
-    },
-  },
-  verificationItems: {
-    orderBy: { id: "asc" },
-    select: {
-      id: true,
-      expectedQty: true,
-      component: {
-        select: {
-          id: true,
-          componentName: true,
-          piecesPerGarment: true,
-        },
-      },
-    },
-  },
-};
-
-function serializeOrder(order) {
-  const metrics = calculateFabricMetrics(
-    order.recipe.stdFabricYards,
-    order.targetQty,
-    Number(order.actualFabricYds)
-  );
-
-  return {
-    id: order.id,
-    orderNo: order.orderNo,
-    recipeId: order.recipeId,
-    targetQty: order.targetQty,
-    fabricRollId: order.fabricRollId,
-    actualFabricYds: Number(order.actualFabricYds),
-    expectedFabricYds: metrics?.expectedFabricYds ?? null,
-    wastagePct: metrics?.wastagePct ?? null,
-    status: order.status,
-    createdById: order.createdById,
-    createdAt: order.createdAt,
-    updatedAt: order.updatedAt,
-    recipe: {
-      ...order.recipe,
-      stdFabricYards: Number(order.recipe.stdFabricYards),
-      wastageCap: Number(order.recipe.wastageCap),
-    },
-    createdBy: order.createdBy,
-    expectedComponents: order.verificationItems.map((item) => ({
-      componentId: item.component.id,
-      componentName: item.component.componentName,
-      piecesPerGarment: item.component.piecesPerGarment,
-      expectedQty: item.expectedQty,
-    })),
-  };
-}
+function createOrderRouter(prismaClient) {
+  const database = prismaClient || require("../config/prisma");
+  const router = express.Router();
+  const canReadOrders = requireRole("cutting_supervisor", "cutting_verifier");
 
 router.use(authenticate);
 
@@ -97,7 +29,7 @@ router.post("/", requireRole("cutting_supervisor"), async (req, res) => {
   }
 
   try {
-    const result = await prisma.$transaction(async (transaction) => {
+    const result = await database.$transaction(async (transaction) => {
       const recipe = await transaction.recipe.findUnique({
         where: { id: validation.value.recipeId },
         include: {
@@ -133,6 +65,8 @@ router.post("/", requireRole("cutting_supervisor"), async (req, res) => {
           targetQty: validation.value.targetQty,
           fabricRollId: validation.value.fabricRollId,
           actualFabricYds: validation.value.actualFabricYds,
+          expectedFabricYds: metrics.expectedFabricYds,
+          wastagePct: metrics.wastagePct,
           createdById: req.user.id,
           expectedComponents: expectations.expectedComponents,
         }),
@@ -161,7 +95,11 @@ router.post("/", requireRole("cutting_supervisor"), async (req, res) => {
 
 router.get("/", canReadOrders, async (req, res) => {
   try {
-    const orders = await prisma.cuttingOrder.findMany({
+    const where = req.user.role === "cutting_supervisor"
+      ? { createdById: req.user.id }
+      : {};
+    const orders = await database.cuttingOrder.findMany({
+      where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       include: orderRelations,
     });
@@ -183,8 +121,11 @@ router.get("/:id", canReadOrders, async (req, res) => {
   }
 
   try {
-    const order = await prisma.cuttingOrder.findUnique({
-      where: { id: orderId },
+    const order = await database.cuttingOrder.findFirst({
+      where: {
+        id: orderId,
+        ...(req.user.role === "cutting_supervisor" ? { createdById: req.user.id } : {}),
+      },
       include: orderRelations,
     });
 
@@ -202,4 +143,7 @@ router.get("/:id", canReadOrders, async (req, res) => {
   }
 });
 
-module.exports = router;
+  return router;
+}
+
+module.exports = createOrderRouter;

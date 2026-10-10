@@ -2,13 +2,21 @@
 
 import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { apiRequest, ApiError } from "@/app/lib/api";
+import { apiRequest, ApiError, type ApiEnvelope } from "@/app/lib/api";
 import { isUserRole, readSession, saveSession, type AuthUser } from "@/app/lib/session";
 
 type LoginResponse = {
   token: string;
   user: AuthUser;
 };
+
+type DemoAccount = AuthUser & { password: string };
+
+const roleLabels = {
+  cutting_supervisor: "Cutting Supervisor",
+  cutting_verifier: "Cutting Verifier",
+  sewing_supervisor: "Sewing Supervisor",
+} as const;
 
 function isLoginResponse(value: unknown): value is LoginResponse {
   if (typeof value !== "object" || value === null || !("token" in value) || !("user" in value)) {
@@ -39,12 +47,29 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
+  const [demoError, setDemoError] = useState("");
 
   useEffect(() => {
     const session = readSession();
     if (session) {
       router.replace("/dashboard");
     }
+
+    let active = true;
+    apiRequest<ApiEnvelope<DemoAccount[]>>("/api/auth/demo-accounts")
+      .then((response) => {
+        if (active) setDemoAccounts(response.data);
+      })
+      .catch((requestError) => {
+        if (active && !(requestError instanceof ApiError && requestError.status === 404)) {
+          setDemoError("Demo credentials are unavailable. Sign in with your assigned account.");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, [router]);
 
   const reason = searchParams.get("reason");
@@ -54,7 +79,7 @@ function LoginForm() {
       : reason === "required"
         ? "Sign in to access the dashboard."
         : reason === "forbidden"
-          ? "This account does not have Cutting Supervisor access."
+          ? "Your account does not have access to the requested workspace."
           : "";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -108,6 +133,32 @@ function LoginForm() {
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Sign in</h1>
           <p className="mt-2 text-sm text-slate-600">Access cutting operations with your account.</p>
         </div>
+
+        {demoAccounts.length > 0 && (
+          <section aria-labelledby="demo-accounts-heading" className="mb-6 border border-emerald-200 bg-emerald-50 p-4">
+            <h2 className="text-sm font-semibold text-emerald-950" id="demo-accounts-heading">Assessment demo accounts</h2>
+            <p className="mt-1 text-xs text-emerald-900">Selecting an account fills the standard sign-in form. The server still verifies its password and assigns the authenticated role.</p>
+            <div className="mt-3 grid gap-2">
+              {demoAccounts.map((account) => (
+                <button
+                  className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 border border-emerald-300 bg-white px-3 py-2 text-left text-sm text-slate-950 hover:bg-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-800"
+                  key={account.role}
+                  onClick={() => {
+                    setEmail(account.email);
+                    setPassword(account.password);
+                    setError("");
+                  }}
+                  type="button"
+                >
+                  <span className="font-semibold">{roleLabels[account.role]}</span>
+                  <span className="text-xs text-slate-700">{account.email}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {demoError && <p className="mb-4 text-sm text-amber-900" role="status">{demoError}</p>}
 
         <form className="space-y-5" onSubmit={handleSubmit} noValidate>
           <div>

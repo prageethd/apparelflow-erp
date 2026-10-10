@@ -19,6 +19,36 @@ export type ExpectedComponent = {
   componentName: string;
   piecesPerGarment: number;
   expectedQty: number;
+  actualQty: number | null;
+  status: "GREEN" | "YELLOW" | "RED" | null;
+};
+
+export type VerificationHistoryEntry = {
+  id: number;
+  decision: "APPROVED" | "REJECTED";
+  rejectionNote: string | null;
+  wastagePct: number | null;
+  snapshot: {
+    components?: Array<{
+      componentId: number;
+      componentName: string;
+      expectedQty: number;
+      actualQty: number | null;
+      status: "GREEN" | "YELLOW" | "RED" | null;
+      variance: number | null;
+    }>;
+    fabric?: {
+      expectedFabricYds: number;
+      actualFabricYds: number;
+      wastagePct: number;
+    };
+  } | null;
+  timestamp: string;
+  verifier: {
+    id: number;
+    fullName: string;
+    role: string;
+  };
 };
 
 export type CuttingOrder = {
@@ -32,6 +62,7 @@ export type CuttingOrder = {
   wastagePct: number | null;
   status: string;
   createdById: number;
+  sewingStartedAt: string | null;
   createdAt: string;
   updatedAt: string;
   recipe: Pick<Recipe, "id" | "recipeCode" | "name" | "category" | "stdFabricYards" | "wastageCap">;
@@ -41,7 +72,21 @@ export type CuttingOrder = {
     fullName: string;
     role: string;
   };
+  sewingStartedBy: {
+    id: number;
+    email: string;
+    fullName: string;
+    role: string;
+  } | null;
   expectedComponents: ExpectedComponent[];
+  verificationHistory: VerificationHistoryEntry[];
+};
+
+export type AuthUser = {
+  id: number;
+  email: string;
+  role: "cutting_supervisor" | "cutting_verifier" | "sewing_supervisor";
+  fullName: string;
 };
 
 export type ApiEnvelope<T> = {

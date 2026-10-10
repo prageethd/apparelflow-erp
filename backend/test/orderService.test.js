@@ -88,6 +88,7 @@ test("calculates expected fabric and wastage to two decimal places", () => {
     wastagePct: 5.56,
   });
   assert.equal(calculateFabricMetrics("0.00", 10, 18.9), null);
+  assert.equal(calculateFabricMetrics("99999999.99", 2147483647, 1), null);
 });
 
 test("accepts integer order IDs and rejects order numbers or invalid IDs", () => {
@@ -104,6 +105,8 @@ test("builds pending orders with authenticated creator and unverified item value
     targetQty: 10,
     fabricRollId: "ROLL-42",
     actualFabricYds: 18.9,
+    expectedFabricYds: 18,
+    wastagePct: 5,
     createdById: 7,
     expectedComponents: [
       { componentId: 12, expectedQty: 20 },
@@ -116,4 +119,6 @@ test("builds pending orders with authenticated creator and unverified item value
     { componentId: 12, expectedQty: 20, actualQty: null, status: null },
   ]);
   assert.equal(createData.actualFabricYds, "18.90");
+  assert.equal(createData.expectedFabricYds, "18.00");
+  assert.equal(createData.wastagePct, "5.00");
 });
